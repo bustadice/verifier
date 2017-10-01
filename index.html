@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>bustadice wager verifier</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: sans-serif;
+    }
+    html {
+      min-height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+
+      background: #2C3E50;
+      color: #E4F1FE;
+    }
+    body {
+      max-width: 900px;
+    }
+    h1 {
+      font-weight: 300;
+    }
+    a {
+      color: #F89406;
+      text-decoration: inherit;
+    }
+    a:hover{
+      text-decoration: underline;
+    }
+    ol {
+      counter-reset: list;
+      list-style: none;
+      position: relative;
+    }
+    li {
+      position: relative;
+    }
+    li:not(.hidden)::before {
+      counter-increment: list;
+      content: counter(list) ". ";
+      position: absolute;
+      left: -20px;
+    }
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    label,
+    input {
+      margin-top: 10px;
+    }
+    label {
+      width: 25%;
+    }
+    input {
+      width: 75%;
+      padding: 5px;
+      font-size: 1.2em;
+      color: black;
+    }
+    hr {
+      width: 100%;
+      margin-top: 18px;
+    }
+
+    #server_seed,
+    #client_seed,
+    #server_seed_hash {
+      font-family: monospace;
+    }
+    #result {
+      text-align: right;
+      font-weight: bold;
+    }
+  </style>
+  <script>
+    async function bufferFromString(string) {
+      let buffer
+      const fileReader = new FileReader()
+      const done = new Promise(resolve => {
+        fileReader.onload = event => {
+          buffer = event.target.result
+          resolve()
+        }
+      })
+      const blob = new Blob([ string ], { type: "text/plain" })
+      fileReader.readAsArrayBuffer(blob)
+      await done
+      return new Uint8Array(buffer)
+    }
+
+    function hexStringFromBuffer(buffer) {
+      return Array.from(buffer).map(byte => {
+        let hex = byte.toString(16)
+        if (hex.length < 2) {
+          hex = "0" + hex
+        }
+        return hex
+      }).join("")
+    }
+
+    async function hmacSha256(key, message) {
+      key = await bufferFromString(key)
+      message = await bufferFromString(message)
+      key = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, true, [ "sign" ])
+      const hash = await crypto.subtle.sign("HMAC", key, message)
+      return hexStringFromBuffer(new Uint8Array(hash))
+    }
+
+    async function sha256(string) {
+      const buffer = await bufferFromString(string)
+      const hash = await crypto.subtle.digest("SHA-256", buffer)
+      return hexStringFromBuffer(new Uint8Array(hash))
+    }
+
+
+    async function gameResult(gameSeed, clientSeed, nonce, auditSeed) {
+      let hash = await hmacSha256(`${gameSeed}|${clientSeed}|${nonce}`, auditSeed)
+
+      // take the first 52 bits
+      hash = hash.substr(0, 52/4)
+
+      // convert to a number that is uniformly distributed in [0; 1)
+      const X = parseInt(hash, 16) / Math.pow(2, 52)
+
+      // apply bustadice formula
+      const multiplier = Math.floor(99 / (1 - X))
+
+      // ensure multiplier is within allowed limits
+      return Math.max(100, Math.min(multiplier, 100000000))
+    }
+  </script>
+</head>
+<body>
+  <h1>bustadice wager verifier</h1>
+  <p><a href="https://bustadice.com" target="_blank">bustadice</a> is provably fair, which means that players themselves can verify that the outcomes of their wagers were decided fairly.</p>
+  <p>Here's how:</p>
+  <ol>
+    <li>In the <a href="https://bustadice.com/play/seed" target="_blank">seed management dialog</a>, generate a new seed pair. Take note of the server seed hash. You will need it later!</li>
+    <li>Next, pick a new client seed. It is best to pick one yourself, but it is also fine to randomly generate it. Also write this down.</li>
+    <li>Now, play as long as you like.</li>
+    <li class="hidden"><br>…<br><br></li>
+    <li>Once you've finished playing, go back to the <a href="https://bustadice.com/play/seed" target="_blank">seed management dialog</a> and pick a new client seed. This reveals the previous server seed.</li>
+    <li>Open the details page of the bet you'd like to verify. Copy &amp; paste the server seed, client seed and nonce to the form below.</li>
+    <li>Verify that the calculated server seed hash and bet result in the form match the information on the bet details page.</li>
+  </ol>
+  <form id="form">
+    <label for="server_seed">Server seed:</label><input id="server_seed" />
+    <label for="client_seed">Client seed:</label><input id="client_seed" />
+    <label for="nonce">Nonce:</label><input id="nonce" type="number" min="1" step="1"/>
+    <hr />
+    <label for="server_seed_hash">Server seed hash:</label><input id="server_seed_hash" disabled value="&nbsp;" />
+    <label for="result">Result:</label><input id="result" disabled value="&nbsp;" />
+  </form>
+  <small style="display: block; text-align: center; margin-top: 20px;">By the way, you can save this page to disk if you like!</small>
+
+  <script>
+    const form = document.getElementById("form")
+
+    form.addEventListener("input", async () => {
+      const { value: serverSeed } = document.getElementById("server_seed")
+      const seeds = serverSeed.split("_").filter(v => !!v)
+
+      let result
+      if (seeds.length != 2) {
+        result = " "
+      } else try {
+        let [ auditSeed, gameSeed ] = seeds
+
+        const auditSeedHash = await sha256(auditSeed)
+        result = await hmacSha256(gameSeed, auditSeedHash)
+      } catch (error) {
+        result = " "
+      }
+
+      document.getElementById("server_seed_hash").value = result
+    })
+
+    form.addEventListener("input", async () => {
+      const { value: serverSeed } = document.getElementById("server_seed")
+      const seeds = serverSeed.split("_").filter(v => !!v)
+      const { value: clientSeed } = document.getElementById("client_seed")
+      let { value: nonce } = document.getElementById("nonce")
+      nonce = Number(nonce)
+
+      let result
+      if (seeds.length != 2 || !clientSeed || Number.isNaN(nonce) || !Number.isInteger(nonce) || nonce < 1) {
+        result = " "
+      } else try {
+        const [ auditSeed, gameSeed ] = seeds
+        const wagerHash = await hmacSha256(auditSeed, "" + nonce)
+        result = await gameResult(gameSeed, clientSeed, nonce, wagerHash)
+        result /= 100
+        result = result.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "x"
+      } catch (error) {
+        result = " "
+      }
+
+      document.getElementById("result").value = result
+    })
+  </script>
+</body>
+</html>
